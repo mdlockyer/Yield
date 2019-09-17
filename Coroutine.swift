@@ -1,43 +1,60 @@
+//
+//  Coroutine.swift
+//  Tensor
+//
+//  Created by Michael Lockyer on 9/17/19.
+//
+
+import Foundation
 import Dispatch
 
-private let coroutineQueue = dispatch_queue_create("coroutine", DISPATCH_QUEUE_CONCURRENT)
 
-public class Coroutine<Element>: GeneratorType {	
-	private let callerReady = dispatch_semaphore_create(0)
-	private let coroutineReady = dispatch_semaphore_create(0)
+private let coroutineQueue = DispatchQueue(label: "coroutine",
+										   qos: .default,
+										   attributes: .concurrent,
+										   autoreleaseFrequency: .inherit,
+										   target: nil)
+
+// Used to supress warnings about unsused return from
+// DispatchSemaphore.wait()
+@discardableResult fileprivate func semaphoreWait(semaphore: DispatchSemaphore,
+												  timeout: DispatchTime)
+	-> DispatchTimeoutResult {
+		return semaphore.wait(timeout: timeout)
+}
+
+public class Coroutine<Element>: IteratorProtocol {
+	private let callerReady = DispatchSemaphore(value: 0)
+	private let coroutineReady = DispatchSemaphore(value: 0)
 	private var done: Bool = false
 	private var transportStorage: Element?
 	
-	public typealias Yield = Element -> ()
-	public init(implementation: Yield -> ()) {
-		dispatch_async(coroutineQueue) {			
+	public typealias Yield = (Element) -> ()
+	public init(implementation: @escaping (Yield) -> ()) {
+		coroutineQueue.async() {
 			// Don't start coroutine until first call.
-			dispatch_semaphore_wait(self.callerReady, DISPATCH_TIME_FOREVER)
+			semaphoreWait(semaphore: self.callerReady, timeout: .distantFuture)
 			
 			implementation { next in
 				// Place element in transport storage, and let caller know it's ready.
 				self.transportStorage = next
-				dispatch_semaphore_signal(self.coroutineReady)
-
+				self.coroutineReady.signal()
 				// Don't continue coroutine until next call.
-				dispatch_semaphore_wait(self.callerReady, DISPATCH_TIME_FOREVER)
+				semaphoreWait(semaphore: self.callerReady, timeout: .distantFuture)
 			}
-			
 			// The coroutine is forever over, so let's let the caller know.
 			self.done = true
-			dispatch_semaphore_signal(self.coroutineReady)
+			self.coroutineReady.signal()
 		}
 	}
 	
 	public func next() -> Element? {
 		// Make sure work is happening before we wait.
 		guard !done else { return nil }
-		
 		// Return to the coroutine.
-		dispatch_semaphore_signal(callerReady)
-								
+		self.callerReady.signal()
 		// Wait until it has finished, then return and clear the result.
-		dispatch_semaphore_wait(coroutineReady, DISPATCH_TIME_FOREVER)
+		semaphoreWait(semaphore: self.coroutineReady, timeout: .distantFuture)
 		defer { transportStorage = nil }
 		return transportStorage
 	}
