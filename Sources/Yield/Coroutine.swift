@@ -1,11 +1,3 @@
-//
-//  Coroutine.swift
-//  Tensor
-//
-//  Created by Michael Lockyer on 9/17/19.
-//
-
-import Foundation
 import Dispatch
 
 
