@@ -1,58 +1,65 @@
 import Dispatch
 
-private let coroutineQueue = dispatch_queue_create("argument-passing-coroutine", DISPATCH_QUEUE_CONCURRENT)
+private let coroutineQueue = DispatchQueue(label: "coroutine",
+										   qos: .default,
+										   attributes: .concurrent,
+										   autoreleaseFrequency: .inherit,
+										   target: nil)
 
 private enum TransportStorage<Argument, Element> {
     case Input(Argument)
     case Output(Element)
 }
 
+// Used to supress warnings about unsused return from
+// DispatchSemaphore.wait()
+@discardableResult fileprivate func semaphoreWait(semaphore: DispatchSemaphore,
+												  timeout: DispatchTime)
+	-> DispatchTimeoutResult {
+		return semaphore.wait(timeout: timeout)
+}
+
 public class ArgumentPassingCoroutine<Argument, Element> {
-    private let callerReady = dispatch_semaphore_create(0)
-    private let coroutineReady = dispatch_semaphore_create(0)
+	private let callerReady = DispatchSemaphore(value: 0)
+	private let coroutineReady = DispatchSemaphore(value: 0)
     private var done: Bool = false
     private var transportStorage: TransportStorage<Argument, Element>?
     
-    public typealias Yield = Element -> Argument
-    public init(implementation: Yield -> ()) {
-        dispatch_async(coroutineQueue) {
+	public typealias Yield = (Element) -> Argument
+	public init(implementation: @escaping (Yield) -> ()) {
+        coroutineQueue.async() {
             // Don't start coroutine until first call.
-            dispatch_semaphore_wait(self.callerReady, DISPATCH_TIME_FOREVER)
+            semaphoreWait(semaphore: self.callerReady, timeout: .distantFuture)
             
             implementation { next in
                 // Place element in transport storage, and let caller know it's ready.
                 self.transportStorage = .Output(next)
-                dispatch_semaphore_signal(self.coroutineReady)
+                self.coroutineReady.signal()
                 
                 // Don't continue coroutine until next call.
-                dispatch_semaphore_wait(self.callerReady, DISPATCH_TIME_FOREVER)
+                self.coroutineReady.signal()
                 
                 // Caller sent the next argument, so let's continue.
                 defer { self.transportStorage = nil }
-                guard case let .Some(.Input(input)) = self.transportStorage else { fatalError() }
+                guard case let .some(.Input(input)) = self.transportStorage else { fatalError() }
                 return input
             }
             
             // The coroutine is forever over, so let's let the caller know.
             self.done = true
-            dispatch_semaphore_signal(self.coroutineReady)
+            self.coroutineReady.signal()
         }
     }
     
     public func next(argument: Argument) -> Element? {
         // Make sure work is happening before we wait.
         guard !done else { return nil }
-        
         // Return to the coroutine, passing the argument.
         transportStorage = .Input(argument)
-        dispatch_semaphore_signal(callerReady)
-								
-        // Wait until it has finished.
-        dispatch_semaphore_wait(coroutineReady, DISPATCH_TIME_FOREVER)
-        
+        self.callerReady.signal()
         // Return to the caller the result, then clear it.
-        defer { transportStorage = nil }
-        guard case let .Some(.Output(output)) = transportStorage else { return nil }
+        semaphoreWait(semaphore: self.coroutineReady, timeout: .distantFuture)
+        guard case let .some(.Output(output)) = transportStorage else { return nil }
         return output
     }
 }
